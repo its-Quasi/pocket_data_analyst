@@ -1,43 +1,77 @@
 package main
 
 import (
+	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
+
+	"github.com/joho/godotenv"
+	"github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/option"
 )
 
 func main() {
+	ctx := context.Background()
+	godotenv.Load()
 
-	MOCK := `
-	package main
-	import (
-		"fmt"
+	client := openai.NewClient(
+		option.WithBaseURL("http://localhost:11434/v1/"),
 	)
 
-	func main() {
-		fmt.Println("Hello World!!!")
-	}
-	`
+	model := "gemma4:cloud"
 
-	root_path, err := os.Getwd()
+	messages := []openai.ChatCompletionMessageParamUnion{
+		openai.SystemMessage(
+			`You are a Go code generation engine.
+			Output requirements:
+			- Output ONLY raw Go source code.
+			- The first line MUST be: package main
+			- The code MUST contain a func main().
+			- Do not output markdown.
+			- Do not output explanations.
+			- Do not output notes.
+			- Do not output examples.
+			- Do not output any text before or after the Go source code.
+			- The generated code must compile successfully with Go.`,
+		),
+	}
+
+	input := catchUserInput()
+
+	messages = append(messages, openai.UserMessage(input))
+	res, err := client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
+		Model:    model,
+		Messages: messages,
+	})
 	if err != nil {
 		panic(err)
 	}
+	fmt.Println("Validando response de Ollama")
+	response := res.Choices[0].Message.Content
+	fmt.Println(response)
+	ExecuteTemporal(response)
+}
+
+func ExecuteTemporal(gocode string) {
+	root_path, err := os.Getwd()
+
+	if err != nil {
+		panic(err)
+	}
+
 	sandbox_path := filepath.Join(root_path, "sandbox_area", "temporal.go")
 	fmt.Println(sandbox_path)
-	err = os.WriteFile(sandbox_path, []byte(MOCK), 0644)
+	err = os.WriteFile(sandbox_path, []byte(gocode), 0644)
+
 	if err != nil {
 		panic(err)
 	}
 
 	cmd := exec.Command("go", "run", sandbox_path)
-	// cmd.CombinedOutput()
-	// err = cmd.Run()
-	// if err != nil {
-	// 	fmt.Println(err)
-	// 	panic(err)
-	// }
 	output, err := cmd.Output()
 
 	if err != nil {
@@ -45,45 +79,31 @@ func main() {
 	}
 
 	fmt.Println(string(output))
-	// fmt.Println(cmd.Stdout)
-	// ctx := context.Background()
-	// godotenv.Load()
+	err = os.Remove(sandbox_path)
 
-	// client := openai.NewClient(
-	// 	option.WithBaseURL("http://localhost:11434/v1/"),
-	// )
+	if err != nil {
+		panic(err)
+	}
+}
 
-	// model := "gemma4:cloud"
+func catchUserInput() string {
+	scanner := bufio.NewScanner(os.Stdin)
+	input := ""
+	for {
+		fmt.Print("Enter ur go ask> ")
 
-	// messages := []openai.ChatCompletionMessageParamUnion{
-	// 	openai.SystemMessage("You are a helpful assistant."),
-	// }
-	// scanner := bufio.NewScanner(os.Stdin)
+		if !scanner.Scan() {
+			break
+		}
 
-	// for {
-	// 	fmt.Print("\n> ")
+		input = strings.TrimSpace(scanner.Text())
+		if input == "" {
+			continue
+		}
 
-	// 	if !scanner.Scan() {
-	// 		break
-	// 	}
-
-	// 	input := strings.TrimSpace(scanner.Text())
-	// 	if input == "" {
-	// 		continue
-	// 	}
-
-	// 	messages = append(messages, openai.UserMessage(input))
-
-	// 	res, err := client.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
-	// 		Model:    model,
-	// 		Messages: messages,
-	// 	})
-	// 	if err != nil {
-	// 		panic(err)
-	// 	}
-
-	// 	fmt.Println(res.Choices[0].Message.Content)
-	// 	messages = append(messages, res.Choices[0].Message.ToParam())
-	// }
-
+		if input != "" {
+			break
+		}
+	}
+	return input
 }
