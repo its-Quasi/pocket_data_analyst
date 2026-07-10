@@ -41,7 +41,6 @@ type AppModel struct {
 	spinner            spinner.Model
 	vp                 viewport.Model
 	loading            bool
-	awaitingValidation bool
 }
 
 // llmResponseMsg se devuelve desde la goroutine del AgentLoop.
@@ -128,33 +127,16 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 
-			if msg.String() == "esc" {
-				m.state = viewSessionList
-				m.input.SetValue("")
-				m.awaitingValidation = false
-				return m, nil
-			}
-
-			// Awaiting validation shortcuts
-			if m.awaitingValidation && !m.loading {
-				if msg.String() == "y" {
-					m.awaitingValidation = false
-					m.input.SetValue("")
-					return m, nil
-				}
-				if msg.String() == "r" {
-					m.awaitingValidation = false
-					m.input.SetValue("")
-					m.input.Focus()
-					return m, nil
-				}
-			}
+		if msg.String() == "esc" {
+			m.state = viewSessionList
+			m.input.SetValue("")
+			return m, nil
+		}
 
 			if msg.Type == tea.KeyEnter && !m.loading {
 				q := strings.TrimSpace(m.input.Value())
 				if q != "" {
 					m.loading = true
-					m.awaitingValidation = false
 					session := m.sm.GetActive()
 					session.Messages = append(session.Messages, domain.Message{
 						Role:    domain.RoleUser,
@@ -197,16 +179,12 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.state = viewChat
 		m.input.SetValue("")
 		m.input.Focus()
-		m.awaitingValidation = false
 		m.refreshViewport()
 		return m, nil
 
 	case llmResponseMsg:
 		m.loading = false
 		if session := m.sm.GetActive(); session != nil {
-			if msg.err == nil {
-				m.awaitingValidation = true
-			}
 			m.refreshViewport()
 			m.vp.GotoBottom()
 		}
@@ -306,8 +284,6 @@ func (m AppModel) rightPaneView() string {
 	b.WriteString("\n")
 	if m.loading {
 		b.WriteString(m.spinner.View() + " thinking...")
-	} else if m.awaitingValidation {
-		b.WriteString(SubtitleStyle.Render("[y] accept  [r] retry/fix  [esc] back"))
 	} else {
 		b.WriteString(SubtitleStyle.Render("↑/↓ scroll • esc back • enter send"))
 	}
