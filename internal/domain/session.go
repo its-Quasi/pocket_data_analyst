@@ -15,9 +15,12 @@ const (
 
 // Message representa un mensaje en la conversación de una sesión.
 type Message struct {
-	Role    Role
-	Content string
-	Time    time.Time
+	Role            Role
+	Content         string
+	RawCode         string
+	IsError         bool
+	IsHumanFeedback bool
+	Time            time.Time
 }
 
 // Session agrupa la configuración de DB, el DDL y el historial de mensajes.

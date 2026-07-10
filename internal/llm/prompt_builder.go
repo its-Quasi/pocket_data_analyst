@@ -15,6 +15,11 @@ You have access to the following MySQL database schema:
 Use this exact DSN for all database connections:
 "` + dsn + `"
 
+About code execution:
+- For ALL database query errors, use log.Fatal(err) instead of log.Printf or graceful returns.
+- The program MUST exit with a non-zero status if the query fails or produces unexpected errors.
+- Do not wrap query errors in if err != nil { log.Printf(...); return }.
+
 Output requirements:
 - Output ONLY raw Go source code.
 - The first line MUST be: package main
@@ -30,6 +35,8 @@ Output requirements:
 }
 
 // SessionMessagesToOpenAI convierte los mensajes internos de una sesión al formato de la librería.
+// Cuando un mensaje del assistant contiene RawCode, se envía SOLO el código crudo
+// para evitar que el LLM aprenda a generar markdown o texto decorativo.
 func SessionMessagesToOpenAI(msgs []domain.Message, systemPrompt string) []openai.ChatCompletionMessageParamUnion {
 	out := make([]openai.ChatCompletionMessageParamUnion, 0, len(msgs)+1)
 	out = append(out, openai.SystemMessage(systemPrompt))
@@ -38,7 +45,11 @@ func SessionMessagesToOpenAI(msgs []domain.Message, systemPrompt string) []opena
 		case domain.RoleUser:
 			out = append(out, openai.UserMessage(m.Content))
 		case domain.RoleAssistant:
-			out = append(out, openai.AssistantMessage(m.Content))
+			if m.RawCode != "" {
+				out = append(out, openai.AssistantMessage(m.RawCode))
+			} else {
+				out = append(out, openai.AssistantMessage(m.Content))
+			}
 		}
 	}
 	return out

@@ -10,7 +10,6 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/openai/openai-go/v3"
 
 	"quasi.db_analysis_agent/internal/database"
 	"quasi.db_analysis_agent/internal/domain"
@@ -31,20 +30,21 @@ type AppModel struct {
 	width  int
 	height int
 
-	state       viewState
-	sm          *domain.SessionManager
-	llmClient   *llm.Client
-	llmBaseURL  string
+	state      viewState
+	sm         *domain.SessionManager
+	llmClient  *llm.Client
+	llmBaseURL string
 
-	wizard      WizardModel
-	sessionList SessionListModel
-	input       textinput.Model
-	spinner     spinner.Model
-	vp          viewport.Model
-	loading     bool
+	wizard             WizardModel
+	sessionList        SessionListModel
+	input              textinput.Model
+	spinner            spinner.Model
+	vp                 viewport.Model
+	loading            bool
+	awaitingValidation bool
 }
 
-// llmResponseMsg se devuelve desde la goroutine que consulta al LLM.
+// llmResponseMsg se devuelve desde la goroutine del AgentLoop.
 type llmResponseMsg struct {
 	code   string
 	output string
@@ -79,8 +79,6 @@ func (m AppModel) Init() tea.Cmd {
 }
 
 func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var cmds []tea.Cmd
-
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -114,6 +112,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 
 		case viewChat:
+			// Scroll del viewport
 			switch msg.Type {
 			case tea.KeyUp:
 				m.vp.LineUp(1)
@@ -132,12 +131,30 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.String() == "esc" {
 				m.state = viewSessionList
 				m.input.SetValue("")
+				m.awaitingValidation = false
 				return m, nil
 			}
+
+			// Awaiting validation shortcuts
+			if m.awaitingValidation && !m.loading {
+				if msg.String() == "y" {
+					m.awaitingValidation = false
+					m.input.SetValue("")
+					return m, nil
+				}
+				if msg.String() == "r" {
+					m.awaitingValidation = false
+					m.input.SetValue("")
+					m.input.Focus()
+					return m, nil
+				}
+			}
+
 			if msg.Type == tea.KeyEnter && !m.loading {
 				q := strings.TrimSpace(m.input.Value())
 				if q != "" {
 					m.loading = true
+					m.awaitingValidation = false
 					session := m.sm.GetActive()
 					session.Messages = append(session.Messages, domain.Message{
 						Role:    domain.RoleUser,
@@ -145,9 +162,10 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					})
 					m.input.SetValue("")
 					m.refreshViewport()
+					m.vp.GotoBottom()
 					return m, tea.Batch(
 						m.spinner.Tick,
-						askAndRun(m.llmClient, session, q),
+						AgentLoop(m.llmClient, session),
 					)
 				}
 			}
@@ -179,22 +197,15 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.state = viewChat
 		m.input.SetValue("")
 		m.input.Focus()
+		m.awaitingValidation = false
 		m.refreshViewport()
 		return m, nil
 
 	case llmResponseMsg:
 		m.loading = false
 		if session := m.sm.GetActive(); session != nil {
-			if msg.err != nil {
-				session.Messages = append(session.Messages, domain.Message{
-					Role:    domain.RoleAssistant,
-					Content: fmt.Sprintf("Error: %v\n\nOutput:\n%s", msg.err, msg.output),
-				})
-			} else {
-				session.Messages = append(session.Messages, domain.Message{
-					Role:    domain.RoleAssistant,
-					Content: fmt.Sprintf("=== Generated Code ===\n%s\n\n=== Execution Result ===\n%s", msg.code, msg.output),
-				})
+			if msg.err == nil {
+				m.awaitingValidation = true
 			}
 			m.refreshViewport()
 			m.vp.GotoBottom()
@@ -208,7 +219,7 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
-	return m, tea.Batch(cmds...)
+	return m, nil
 }
 
 func (m AppModel) View() string {
@@ -245,14 +256,13 @@ func (m *AppModel) resizePanes() {
 		rightW = 10
 	}
 
-	// Altura del input + hints ≈ 3 líneas
 	inputHeight := 3
-	vpHeight := m.height - inputHeight - 4 // padding/borders
+	vpHeight := m.height - inputHeight - 4
 	if vpHeight < 5 {
 		vpHeight = 5
 	}
 
-	m.vp.Width = rightW - 4  // menos padding de los bordes
+	m.vp.Width = rightW - 4
 	m.vp.Height = vpHeight
 
 	m.input.Width = rightW - 4
@@ -296,6 +306,8 @@ func (m AppModel) rightPaneView() string {
 	b.WriteString("\n")
 	if m.loading {
 		b.WriteString(m.spinner.View() + " thinking...")
+	} else if m.awaitingValidation {
+		b.WriteString(SubtitleStyle.Render("[y] accept  [r] retry/fix  [esc] back"))
 	} else {
 		b.WriteString(SubtitleStyle.Render("↑/↓ scroll • esc back • enter send"))
 	}
@@ -324,23 +336,57 @@ func (m *AppModel) refreshViewport() {
 	m.vp.SetContent(b.String())
 }
 
-func askAndRun(client *llm.Client, session *domain.Session, question string) tea.Cmd {
+// AgentLoop ejecuta el ciclo CodeAct: genera código, lo ejecuta,
+// y si falla inyecta automáticamente el error como feedback al LLM
+// para reintentar (máximo 3 veces). Muta directamente session.Messages.
+func AgentLoop(client *llm.Client, session *domain.Session) tea.Cmd {
 	return func() tea.Msg {
 		ctx := context.Background()
-		systemPrompt := llm.BuildSystemPrompt(&session.DDLInfo, session.Config.DSN())
-		msgs := llm.SessionMessagesToOpenAI(session.Messages, systemPrompt)
-		msgs = append(msgs, openai.UserMessage(question))
+		maxRetries := 3
 
-		resp, err := client.Chat(ctx, msgs)
-		if err != nil {
-			return llmResponseMsg{code: "", output: "", err: err}
+		for attempt := 0; attempt < maxRetries; attempt++ {
+			systemPrompt := llm.BuildSystemPrompt(&session.DDLInfo, session.Config.DSN())
+			msgs := llm.SessionMessagesToOpenAI(session.Messages, systemPrompt)
+
+			generatedCode, err := client.Chat(ctx, msgs)
+			if err != nil {
+				session.Messages = append(session.Messages, domain.Message{
+					Role:    domain.RoleAssistant,
+					Content: fmt.Sprintf("LLM communication error: %v", err),
+				})
+				return llmResponseMsg{code: "", output: "", err: err}
+			}
+
+			output, execErr := runner.ExecuteTemporal(generatedCode)
+
+			if execErr == nil {
+				// ÉXITO TÉCNICO
+				session.Messages = append(session.Messages, domain.Message{
+					Role:    domain.RoleAssistant,
+					Content: fmt.Sprintf("=== Generated Code ===\n%s\n\n=== Execution Result ===\n%s", generatedCode, output),
+					RawCode: generatedCode,
+				})
+				return llmResponseMsg{code: generatedCode, output: output, err: nil}
+			}
+
+			// ERROR: guardar código que falló y luego el feedback automático
+			session.Messages = append(session.Messages, domain.Message{
+				Role:    domain.RoleAssistant,
+				Content: fmt.Sprintf("=== Generated Code (attempt %d) ===\n%s", attempt+1, generatedCode),
+				RawCode: generatedCode,
+			})
+			session.Messages = append(session.Messages, domain.Message{
+				Role:    domain.RoleUser,
+				Content: fmt.Sprintf("The previous code failed with error: %v\nOutput: %s\nPlease fix and regenerate.", execErr, output),
+				IsError: true,
+			})
 		}
 
-		output, runErr := runner.ExecuteTemporal(resp)
-		return llmResponseMsg{
-			code:   resp,
-			output: output,
-			err:    runErr,
-		}
+		// Agotó los 3 intentos sin éxito
+		session.Messages = append(session.Messages, domain.Message{
+			Role:    domain.RoleAssistant,
+			Content: fmt.Sprintf("Failed after %d attempts. Could not generate working code.", maxRetries),
+		})
+		return llmResponseMsg{code: "", output: "", err: fmt.Errorf("failed after %d attempts", maxRetries)}
 	}
 }
