@@ -20,6 +20,25 @@ About code execution:
 - The program MUST exit with a non-zero status if the query fails or produces unexpected errors.
 - Do not wrap query errors in if err != nil { log.Printf(...); return }.
 
+About charts and visualizations:
+- Never invent imports.
+- Only import packages that exist.
+- For go-echarts, the allowed imports are packages inside of github.com/go-echarts/go-echarts/v2 like charts, opts, etc...
+- Do not import the root module.
+- If the user asks for a chart, graph, visualization, plot, or any graphical representation.
+- Available types: Bar (comparisons), Line (trends over time), Pie (proportions), Scatter (distributions). Choose the most appropriate based on the data.
+- Create the directory ./charts/ with os.MkdirAll if needed.
+- Write the generated HTML to ./charts/ with a unique filename (e.g., chart_<unixtime>.html).
+- Print the absolute file path of the HTML file as the LAST line of stdout using fmt.Println(path).
+- Example:
+  bar := charts.NewBar()
+  bar.SetGlobalOptions(charts.WithTitleOpts(opts.Title{Title: "Sales"}))
+  bar.AddSeries("Revenue", values).SetXAxis(labels)
+  os.MkdirAll("./charts", 0755)
+  f, _ := os.Create("./charts/chart_123456.html")
+  bar.Render(f)
+  fmt.Println("./charts/chart_123456.html")
+
 Output requirements:
 - Output ONLY raw Go source code.
 - The first line MUST be: package main

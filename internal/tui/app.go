@@ -312,6 +312,18 @@ func (m *AppModel) refreshViewport() {
 	m.vp.SetContent(b.String())
 }
 
+// extractChartPath busca la última línea no vacía del output que termine en .html.
+func extractChartPath(output string) string {
+	lines := strings.Split(output, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line != "" && strings.HasSuffix(line, ".html") {
+			return line
+		}
+	}
+	return ""
+}
+
 // AgentLoop ejecuta el ciclo CodeAct: genera código, lo ejecuta,
 // y si falla inyecta automáticamente el error como feedback al LLM
 // para reintentar (máximo 3 veces). Muta directamente session.Messages.
@@ -337,9 +349,15 @@ func AgentLoop(client *llm.Client, session *domain.Session) tea.Cmd {
 
 			if execErr == nil {
 				// ÉXITO TÉCNICO
+				chartPath := extractChartPath(output)
+				content := fmt.Sprintf("=== Generated Code ===\n%s\n\n=== Execution Result ===\n%s", generatedCode, output)
+				if chartPath != "" {
+					_ = runner.OpenBrowser(chartPath)
+					content += fmt.Sprintf("\n\nChart opened: %s", chartPath)
+				}
 				session.Messages = append(session.Messages, domain.Message{
 					Role:    domain.RoleAssistant,
-					Content: fmt.Sprintf("=== Generated Code ===\n%s\n\n=== Execution Result ===\n%s", generatedCode, output),
+					Content: content,
 					RawCode: generatedCode,
 				})
 				return llmResponseMsg{code: generatedCode, output: output, err: nil}
