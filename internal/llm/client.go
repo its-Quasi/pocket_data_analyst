@@ -8,6 +8,11 @@ import (
 	"github.com/openai/openai-go/v3/option"
 )
 
+type ChartErrorAnalysis struct {
+	IsGoEcharts bool     `json:"is_go_echarts"`
+	Files       []string `json:"files"`
+}
+
 // Client es un wrapper sobre el cliente de OpenAI (Ollama compatible).
 type Client struct {
 	inner openai.Client
@@ -20,13 +25,18 @@ func NewClient(baseURL string) *Client {
 		inner: openai.NewClient(
 			option.WithBaseURL(baseURL),
 		),
-		model: "gemma4:31b-cloud",
+		model: "gpt-oss:20b-cloud",
 	}
 }
 
 // SetModel permite cambiar el modelo por defecto.
 func (c *Client) SetModel(m string) {
 	c.model = m
+}
+
+// Model devuelve el nombre del modelo activo.
+func (c *Client) Model() string {
+	return c.model
 }
 
 // Chat envía mensajes al LLM y devuelve la respuesta.

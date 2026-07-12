@@ -11,6 +11,7 @@ type Role string
 const (
 	RoleUser      Role = "user"
 	RoleAssistant Role = "assistant"
+	RoleSystem    Role = "system"
 )
 
 // Message representa un mensaje en la conversación de una sesión.
@@ -18,6 +19,8 @@ type Message struct {
 	Role            Role
 	Content         string
 	RawCode         string
+	Explanation     string
+	Failed          bool
 	IsError         bool
 	IsHumanFeedback bool
 	Time            time.Time
