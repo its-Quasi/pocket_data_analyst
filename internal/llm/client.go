@@ -8,9 +8,13 @@ import (
 	"github.com/openai/openai-go/v3/option"
 )
 
+type ChartErrorAnalysis struct {
+	IsGoEcharts bool     `json:"is_go_echarts"`
+	Files       []string `json:"files"`
+}
+
 // Client es un wrapper sobre el cliente de OpenAI (Ollama compatible).
 type Client struct {
-	emb   openai.Embedding
 	inner openai.Client
 	model string
 }

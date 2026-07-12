@@ -2,10 +2,12 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/openai/openai-go/v3"
 
 	"quasi.db_analysis_agent/internal/domain"
 	"quasi.db_analysis_agent/internal/llm"
@@ -92,15 +94,38 @@ func repairCode(client *llm.Client, session *domain.Session, failedCode, output 
 
 		originalRequest := getOriginalRequest(session)
 
-		// referenceCode := ""
-		// if docssearch.IsChartRelated(output) {
-		// 	searcher := docssearch.DefaultSearcher()
-		// 	if searcher != nil {
-		// 		referenceCode = searcher.SearchForError(output)
-		// 	}
-		// }
+		res, err := client.Chat(ctx, []openai.ChatCompletionMessageParamUnion{
+			openai.UserMessage(
+				llm.BuildErrorAnalysisPrompt(failedCode, output),
+			),
+		})
 
-		repairPrompt := llm.BuildRepairPrompt(originalRequest, failedCode, output, "")
+		if err != nil {
+			return agentDoneMsg{err: fmt.Errorf("Trying to repair was wrong. LLM communication error: %w", err)}
+		}
+
+		var analysis llm.ChartErrorAnalysis
+
+		err = json.Unmarshal(
+			[]byte(res),
+			&analysis,
+		)
+
+		if err != nil {
+			return agentDoneMsg{
+				err: fmt.Errorf("Cannot parse chart error analysis: %w response=%s", err, res),
+			}
+		}
+
+		referenceDocs := ""
+
+		if analysis.IsGoEcharts {
+			referenceDocs = llm.CheckIntoDocs(
+				analysis.Files,
+			)
+		}
+
+		repairPrompt := llm.BuildRepairPrompt(originalRequest, failedCode, output, referenceDocs)
 		msgs := llm.BuildRepairMessages(&session.DDLInfo, session.Config.DSN(), repairPrompt)
 
 		resp, err := client.Chat(ctx, msgs)

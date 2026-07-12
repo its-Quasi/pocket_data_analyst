@@ -137,7 +137,6 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 
-			// Enter envía, Shift+Enter inserta newline
 			switch msg.String() {
 			case "enter":
 				if !m.loading {
@@ -342,8 +341,6 @@ func (m *AppModel) resizePanes() {
 
 	innerRightW := m.innerRightWidth()
 
-	// Reservar espacio para la altura MÁXIMA del input (6 líneas) + hint
-	// Así el viewport tiene altura fija y no se mueve cuando el input crece
 	maxInputHeight := 6
 	hintHeight := 1
 	vpHeight := m.height - maxInputHeight - hintHeight - 4
