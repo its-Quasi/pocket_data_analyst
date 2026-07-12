@@ -63,6 +63,7 @@ func NewAppModel(baseURL string) AppModel {
 	ta.BlurredStyle = ta.FocusedStyle
 	ta.SetWidth(40)
 	ta.SetHeight(1)
+	ta.CharLimit = 0
 	ta.Focus()
 
 	sp := spinner.New()
