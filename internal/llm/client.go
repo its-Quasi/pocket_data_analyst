@@ -29,6 +29,11 @@ func (c *Client) SetModel(m string) {
 	c.model = m
 }
 
+// Model devuelve el nombre del modelo activo.
+func (c *Client) Model() string {
+	return c.model
+}
+
 // Chat envía mensajes al LLM y devuelve la respuesta.
 func (c *Client) Chat(ctx context.Context, messages []openai.ChatCompletionMessageParamUnion) (string, error) {
 	res, err := c.inner.Chat.Completions.New(ctx, openai.ChatCompletionNewParams{
