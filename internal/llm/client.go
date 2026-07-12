@@ -20,7 +20,7 @@ func NewClient(baseURL string) *Client {
 		inner: openai.NewClient(
 			option.WithBaseURL(baseURL),
 		),
-		model: "gemma4:cloud",
+		model: "gemma4:31b-cloud",
 	}
 }
 

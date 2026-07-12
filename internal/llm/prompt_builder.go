@@ -27,17 +27,18 @@ About charts and visualizations:
 - Do not import the root module.
 - If the user asks for a chart, graph, visualization, plot, or any graphical representation.
 - Available types: Bar (comparisons), Line (trends over time), Pie (proportions), Scatter (distributions). Choose the most appropriate based on the data.
-- Create the directory ./charts/ with os.MkdirAll if needed.
+- Create the directory charts/ inside already existing directory sandbox_area with os.MkdirAll if needed.
 - Write the generated HTML to ./charts/ with a unique filename (e.g., chart_<unixtime>.html).
 - Print the absolute file path of the HTML file as the LAST line of stdout using fmt.Println(path).
 - Example:
   bar := charts.NewBar()
   bar.SetGlobalOptions(charts.WithTitleOpts(opts.Title{Title: "Sales"}))
   bar.AddSeries("Revenue", values).SetXAxis(labels)
-  os.MkdirAll("./charts", 0755)
-  f, _ := os.Create("./charts/chart_123456.html")
+  os.MkdirAll("./sandbox_area/charts", 0755)
+  f, _ := os.Create("./sandbox_area/charts/chart_123456.html")
   bar.Render(f)
-  fmt.Println("./charts/chart_123456.html")
+  fmt.Println("./sandbox_area/charts/chart_123456.html")
+  the location of the html file will be inside of directory sandbox_area/charts
 
 Output requirements:
 - Output ONLY raw Go source code.
