@@ -2,6 +2,10 @@ package llm
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
 
 	"github.com/openai/openai-go/v3"
 	"quasi.db_analysis_agent/internal/domain"
@@ -111,6 +115,7 @@ Instructions:
 - Output your response in the same format with ---CODE--- and ---EXPLANATION--- markers.`,
 		originalRequest, failedCode, output)
 
+	// incluimos la documentacion oficial
 	if referenceCode != "" {
 		prompt += "\n\n" + referenceCode
 		prompt += "\n\nAnalyze the errors above, study the REFERENCE CODE to understand the correct API " +
@@ -128,4 +133,106 @@ func BuildRepairMessages(ddl *domain.DDLInfo, dsn, repairPrompt string) []openai
 		openai.SystemMessage(systemPrompt),
 		openai.UserMessage(repairPrompt),
 	}
+}
+
+func BuildTreeOfDocs() string {
+	wd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	root := filepath.Join(wd, "internal", "lib", "go-echarts")
+	info, err := os.Stat(root)
+	if err != nil || !info.IsDir() {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("go-echarts/\n")
+	buildTree(&b, root, "")
+	return b.String()
+}
+
+func buildTree(b *strings.Builder, dir, prefix string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+
+	var filtered []os.DirEntry
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		filtered = append(filtered, e)
+	}
+
+	sort.Slice(filtered, func(i, j int) bool {
+		if filtered[i].IsDir() != filtered[j].IsDir() {
+			return filtered[i].IsDir()
+		}
+		return filtered[i].Name() < filtered[j].Name()
+	})
+
+	for i, e := range filtered {
+		isLast := i == len(filtered)-1
+		connector := "├── "
+		childPrefix := "│   "
+		if isLast {
+			connector = "└── "
+			childPrefix = "    "
+		}
+
+		b.WriteString(prefix)
+		b.WriteString(connector)
+
+		if e.IsDir() {
+			b.WriteString(e.Name())
+			b.WriteString("/\n")
+			buildTree(b, filepath.Join(dir, e.Name()), prefix+childPrefix)
+		} else {
+			b.WriteString(e.Name())
+			b.WriteString("\n")
+		}
+	}
+}
+
+func BuildErrorAnalysisPrompt(failedCode string, errOutput string) string {
+	return fmt.Sprintf(`
+		You are a Go debugging assistant.
+		Analyze this failed Go execution.
+		Your task is ONLY to determine if the error is related to incorrect usage of the go-echarts library.
+		Available library:
+		go-echarts
+		If the error is related to go-echarts:
+		- set is_go_echarts to true
+		- provide the most relevant source files to inspect
+
+		Available file and folders:
+		`+BuildTreeOfDocs()+`
+		Return ONLY valid JSON.
+		Do not include markdown.
+		Do not include explanations outside JSON.
+
+		Schema:
+
+		{
+		  "is_go_echarts": boolean,
+		  "files": [
+		    "relative/path/file.go"
+		  ]
+		}
+
+
+		Generated code:
+
+		%s
+
+
+		Execution error:
+
+		%s
+
+		`,
+		failedCode,
+		errOutput,
+	)
 }
