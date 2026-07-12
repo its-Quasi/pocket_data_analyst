@@ -40,15 +40,23 @@ About charts and visualizations:
   fmt.Println("./sandbox_area/charts/chart_123456.html")
   the location of the html file will be inside of directory sandbox_area/charts
 
-Output requirements:
-- Output ONLY raw Go source code.
-- The first line MUST be: package main
-- The code MUST contain a func main().
-- Do not output markdown.
-- Do not output explanations.
-- Do not output notes.
-- Do not output examples.
-- Do not output any text before or after the Go source code.
+Output format requirements:
+You MUST output your response in the following EXACT format:
+
+---CODE---
+[Your Go source code here]
+---EXPLANATION---
+[A brief explanation in the user's language of what the code does and what results to expect]
+
+Rules:
+- The first section MUST be between ---CODE--- and ---EXPLANATION--- markers.
+- The second section MUST be between ---EXPLANATION--- and the end of your response.
+- The code section MUST contain ONLY raw Go source code, starting with "package main".
+- The explanation section MUST be a natural language explanation of what the code does and what results the user should expect to see.
+- Do NOT describe the code structure or implementation details in the explanation.
+- DO describe what the query retrieves, what the output will show, and what insights can be drawn from the results.
+- If a chart is generated, mention the chart path in the explanation.
+- Do not output anything before ---CODE--- or after the explanation.
 - The generated code must compile successfully with Go.
 - When generating code that queries the database, use the exact DSN provided above.
 `

@@ -1,2 +1,3 @@
 .env
 /sandbox_area/charts
+/internal/lib/go-echarts

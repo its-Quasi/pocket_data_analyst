@@ -356,15 +356,45 @@ func (m *AppModel) refreshViewport() {
 
 	var b strings.Builder
 	for _, msg := range session.Messages {
+		// No mostrar mensajes de error internos (retry automático)
+		if msg.IsError {
+			continue
+		}
+
 		switch msg.Role {
 		case domain.RoleUser:
 			b.WriteString(UserMsgStyle.Render("You: "))
 			b.WriteString(msg.Content)
+			b.WriteString("\n\n")
+		case domain.RoleSystem:
+			b.WriteString(SystemMsgStyle.Render(msg.Content))
+			b.WriteString("\n\n")
 		case domain.RoleAssistant:
-			b.WriteString(AssistantMsgStyle.Render("AI: "))
-			b.WriteString(msg.Content)
+			// Si tiene código y explicación, renderizar con estilos diferenciados
+			if msg.RawCode != "" && msg.Explanation != "" {
+				b.WriteString(AssistantMsgStyle.Render("AI: "))
+				b.WriteString("\n")
+				b.WriteString(CodeBlockStyle.Render(msg.RawCode))
+				b.WriteString("\n\n")
+				b.WriteString(ExplanationStyle.Render(msg.Explanation))
+				b.WriteString("\n\n")
+			} else if msg.RawCode != "" {
+				// Solo código (sin explicación)
+				b.WriteString(AssistantMsgStyle.Render("AI: "))
+				b.WriteString("\n")
+				b.WriteString(CodeBlockStyle.Render(msg.RawCode))
+				b.WriteString("\n")
+				if msg.Content != "" {
+					b.WriteString(ExplanationStyle.Render(msg.Content))
+				}
+				b.WriteString("\n\n")
+			} else {
+				// Solo texto (errores finales, mensajes de sistema)
+				b.WriteString(AssistantMsgStyle.Render("AI: "))
+				b.WriteString(msg.Content)
+				b.WriteString("\n\n")
+			}
 		}
-		b.WriteString("\n\n")
 	}
 	m.vp.SetContent(b.String())
 }
@@ -381,6 +411,25 @@ func extractChartPath(output string) string {
 	return ""
 }
 
+// parseLLMResponse separa el código y la explicación de la respuesta del LLM.
+func parseLLMResponse(response string) (code string, explanation string) {
+	codeMarker := "---CODE---"
+	explanationMarker := "---EXPLANATION---"
+
+	codeIdx := strings.Index(response, codeMarker)
+	explanationIdx := strings.Index(response, explanationMarker)
+
+	if codeIdx == -1 || explanationIdx == -1 {
+		// Si no encontramos los marcadores, asumimos que todo es código
+		return strings.TrimSpace(response), ""
+	}
+
+	code = strings.TrimSpace(response[codeIdx+len(codeMarker):explanationIdx])
+	explanation = strings.TrimSpace(response[explanationIdx+len(explanationMarker):])
+
+	return code, explanation
+}
+
 // AgentLoop ejecuta el ciclo CodeAct: genera código, lo ejecuta,
 // y si falla inyecta automáticamente el error como feedback al LLM
 // para reintentar (máximo 3 veces). Muta directamente session.Messages.
@@ -393,7 +442,7 @@ func AgentLoop(client *llm.Client, session *domain.Session) tea.Cmd {
 			systemPrompt := llm.BuildSystemPrompt(&session.DDLInfo, session.Config.DSN())
 			msgs := llm.SessionMessagesToOpenAI(session.Messages, systemPrompt)
 
-			generatedCode, err := client.Chat(ctx, msgs)
+			llmResponse, err := client.Chat(ctx, msgs)
 			if err != nil {
 				session.Messages = append(session.Messages, domain.Message{
 					Role:    domain.RoleAssistant,
@@ -402,29 +451,34 @@ func AgentLoop(client *llm.Client, session *domain.Session) tea.Cmd {
 				return llmResponseMsg{code: "", output: "", err: err}
 			}
 
-			output, execErr := runner.ExecuteTemporal(generatedCode)
+			code, explanation := parseLLMResponse(llmResponse)
+
+			output, execErr := runner.ExecuteTemporal(code)
 
 			if execErr == nil {
 				// ÉXITO TÉCNICO
 				chartPath := extractChartPath(output)
-				content := fmt.Sprintf("=== Generated Code ===\n%s\n\n=== Execution Result ===\n%s", generatedCode, output)
 				if chartPath != "" {
 					_ = runner.OpenBrowser(chartPath)
-					content += fmt.Sprintf("\n\nChart opened: %s", chartPath)
+					if explanation != "" {
+						explanation += fmt.Sprintf("\n\nChart opened: %s", chartPath)
+					} else {
+						explanation = fmt.Sprintf("Chart opened: %s", chartPath)
+					}
 				}
 				session.Messages = append(session.Messages, domain.Message{
-					Role:    domain.RoleAssistant,
-					Content: content,
-					RawCode: generatedCode,
+					Role:        domain.RoleAssistant,
+					RawCode:     code,
+					Explanation: explanation,
+					Content:     output,
 				})
-				return llmResponseMsg{code: generatedCode, output: output, err: nil}
+				return llmResponseMsg{code: code, output: output, err: nil}
 			}
 
-			// ERROR: guardar código que falló y luego el feedback automático
+			// ERROR: no guardar código fallido, solo inyectar feedback interno
 			session.Messages = append(session.Messages, domain.Message{
-				Role:    domain.RoleAssistant,
-				Content: fmt.Sprintf("=== Generated Code (attempt %d) ===\n%s", attempt+1, generatedCode),
-				RawCode: generatedCode,
+				Role:    domain.RoleSystem,
+				Content: "⚠ Error detectado en el código generado. Autoreparando...",
 			})
 			session.Messages = append(session.Messages, domain.Message{
 				Role:    domain.RoleUser,
