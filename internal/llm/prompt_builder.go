@@ -1,6 +1,8 @@
 package llm
 
 import (
+	"fmt"
+
 	"github.com/openai/openai-go/v3"
 	"quasi.db_analysis_agent/internal/domain"
 )
@@ -81,4 +83,49 @@ func SessionMessagesToOpenAI(msgs []domain.Message, systemPrompt string) []opena
 		}
 	}
 	return out
+}
+
+// BuildRepairPrompt construye un prompt autónomo para reparar código fallido.
+// No depende del historial de la sesión: incluye el código fallido, el error
+// y la petición original del usuario. Si referenceCode no está vacío, se
+// incluye como documentación de referencia (por ejemplo, código fuente de
+// go-echarts relevante al error).
+func BuildRepairPrompt(originalRequest, failedCode, output, referenceCode string) string {
+	prompt := fmt.Sprintf(`The user's original request was:
+%s
+
+The code you generated failed to compile or run. Here is the failed code:
+
+---FAILED CODE START---
+%s
+---FAILED CODE END---
+
+Error output (compiler/runtime errors):
+%s
+
+Instructions:
+- Maintain the original intent of the user's request.
+- Fix ONLY the errors necessary — do not rewrite the entire program from scratch.
+- Keep the parts of the code that are correct.
+- If a chart/visualization is involved, ensure you use the correct API by studying the reference code below (if provided).
+- Output your response in the same format with ---CODE--- and ---EXPLANATION--- markers.`,
+		originalRequest, failedCode, output)
+
+	if referenceCode != "" {
+		prompt += "\n\n" + referenceCode
+		prompt += "\n\nAnalyze the errors above, study the REFERENCE CODE to understand the correct API " +
+			"(exact method signatures, type names, field names), and fix the code accordingly."
+	}
+
+	return prompt
+}
+
+// BuildRepairMessages construye los mensajes para una llamada de reparación:
+// un system prompt (con DDL y DSN) y un user prompt con el contexto de reparación.
+func BuildRepairMessages(ddl *domain.DDLInfo, dsn, repairPrompt string) []openai.ChatCompletionMessageParamUnion {
+	systemPrompt := BuildSystemPrompt(ddl, dsn)
+	return []openai.ChatCompletionMessageParamUnion{
+		openai.SystemMessage(systemPrompt),
+		openai.UserMessage(repairPrompt),
+	}
 }

@@ -35,6 +35,16 @@ var (
 		Padding(0, 1).
 		Foreground(lipgloss.Color("#A0A0A0"))
 
+	FailedCodeStyle = lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#FF5F5F")).
+		Padding(0, 1).
+		Foreground(lipgloss.Color("#A0A0A0"))
+
+	FailedLabelStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#FF5F5F")).
+		Bold(true)
+
 	ExplanationStyle = lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#FAFAFA")).
 		PaddingLeft(2)

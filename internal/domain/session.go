@@ -20,6 +20,7 @@ type Message struct {
 	Content         string
 	RawCode         string
 	Explanation     string
+	Failed          bool
 	IsError         bool
 	IsHumanFeedback bool
 	Time            time.Time

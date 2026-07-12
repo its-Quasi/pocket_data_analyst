@@ -10,6 +10,7 @@ import (
 
 // Client es un wrapper sobre el cliente de OpenAI (Ollama compatible).
 type Client struct {
+	emb   openai.Embedding
 	inner openai.Client
 	model string
 }
