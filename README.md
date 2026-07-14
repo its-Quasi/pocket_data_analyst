@@ -65,7 +65,7 @@ La base de datos luce asi:
 </p>
 
 Consultas de ejemplo sobre el dataset employees (en caso de no revisar los registros de la DB):
-- Obten los 10 cargos con mayor salario promedio entre 1986 y 1993. Para cada cargo, muestra la evolucion de su salario promedio año a año durante ese periodo, permitiendo analizar cómo cambiaron sus ingresos a lo largo del tiempo.
+- Obten los 10 cargos con mayor salario promedio entre 1986 y 1993. Para cada cargo, muestra la evolucion de su salario promedio año a año durante ese periodo, permitiendo analizar cómo cambiaron sus ingresos a lo largo del tiempo. Representalo en un grafico de lineas
 - Comparacion de salario promedio del cargo manager por género en el año 1992 representado en grafico de barras, usa las etiquetas 'Hombre' y 'Mujer'
 - Distribución porcentual de empleados por departamento representalo en un gráfico de pie
 
