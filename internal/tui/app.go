@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/mattn/go-runewidth"
 
 	"quasi.db_analysis_agent/internal/database"
 	"quasi.db_analysis_agent/internal/domain"
@@ -415,11 +416,68 @@ func (m AppModel) rightPaneView() string {
 	return b.String()
 }
 
+func wordWrap(text string, maxWidth int) string {
+	if maxWidth <= 0 {
+		return text
+	}
+	var out strings.Builder
+	for i, line := range strings.Split(text, "\n") {
+		if i > 0 {
+			out.WriteString("\n")
+		}
+		if runewidth.StringWidth(line) <= maxWidth {
+			out.WriteString(line)
+			continue
+		}
+		words := strings.Fields(line)
+		col := 0
+		for j, word := range words {
+			ww := runewidth.StringWidth(word)
+			if j > 0 && col+1+ww > maxWidth {
+				out.WriteString("\n")
+				col = 0
+			} else if j > 0 {
+				out.WriteString(" ")
+				col++
+			}
+			if ww > maxWidth {
+				for _, ch := range word {
+					cw := runewidth.RuneWidth(ch)
+					if col+cw > maxWidth {
+						out.WriteString("\n")
+						col = 0
+					}
+					out.WriteRune(ch)
+					col += cw
+				}
+			} else {
+				out.WriteString(word)
+				col += ww
+			}
+		}
+	}
+	return out.String()
+}
+
 func (m *AppModel) refreshViewport() {
 	session := m.sm.GetActive()
 	if session == nil {
 		m.vp.SetContent("")
 		return
+	}
+
+	innerW := m.innerRightWidth()
+	codeW := innerW - 4
+	explanationW := innerW - 2
+	userContentW := innerW - 5
+	if codeW < 4 {
+		codeW = 4
+	}
+	if explanationW < 2 {
+		explanationW = 2
+	}
+	if userContentW < 4 {
+		userContentW = 4
 	}
 
 	var b strings.Builder
@@ -431,37 +489,37 @@ func (m *AppModel) refreshViewport() {
 		switch msg.Role {
 		case domain.RoleUser:
 			b.WriteString(UserMsgStyle.Render("You: "))
-			b.WriteString(msg.Content)
+			b.WriteString(wordWrap(msg.Content, userContentW))
 			b.WriteString("\n\n")
 		case domain.RoleAssistant:
 			if msg.Failed {
 				b.WriteString(FailedLabelStyle.Render("AI: ✗ FAILED"))
 				b.WriteString("\n")
-				b.WriteString(FailedCodeStyle.Render(msg.RawCode))
+				b.WriteString(FailedCodeStyle.Render(wordWrap(msg.RawCode, codeW)))
 				b.WriteString("\n")
 				if msg.Content != "" {
-					b.WriteString(ErrorStyle.Render(msg.Content))
+					b.WriteString(ErrorStyle.Render(wordWrap(msg.Content, innerW)))
 				}
 				b.WriteString("\n\n")
 			} else if msg.RawCode != "" && msg.Explanation != "" {
 				b.WriteString(AssistantMsgStyle.Render("AI: "))
 				b.WriteString("\n")
-				b.WriteString(CodeBlockStyle.Render(msg.RawCode))
+				b.WriteString(CodeBlockStyle.Render(wordWrap(msg.RawCode, codeW)))
 				b.WriteString("\n\n")
-				b.WriteString(ExplanationStyle.Render(msg.Explanation))
+				b.WriteString(ExplanationStyle.Render(wordWrap(msg.Explanation, explanationW)))
 				b.WriteString("\n\n")
 			} else if msg.RawCode != "" {
 				b.WriteString(AssistantMsgStyle.Render("AI: "))
 				b.WriteString("\n")
-				b.WriteString(CodeBlockStyle.Render(msg.RawCode))
+				b.WriteString(CodeBlockStyle.Render(wordWrap(msg.RawCode, codeW)))
 				b.WriteString("\n")
 				if msg.Content != "" {
-					b.WriteString(ExplanationStyle.Render(msg.Content))
+					b.WriteString(ExplanationStyle.Render(wordWrap(msg.Content, explanationW)))
 				}
 				b.WriteString("\n\n")
 			} else {
 				b.WriteString(AssistantMsgStyle.Render("AI: "))
-				b.WriteString(msg.Content)
+				b.WriteString(wordWrap(msg.Content, innerW))
 				b.WriteString("\n\n")
 			}
 		}
