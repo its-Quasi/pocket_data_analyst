@@ -1,15 +1,15 @@
 package tui
 
 import (
-	"context"
 	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
-	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/mattn/go-runewidth"
 
 	"quasi.db_analysis_agent/internal/database"
 	"quasi.db_analysis_agent/internal/domain"
@@ -35,26 +35,30 @@ type AppModel struct {
 	llmClient  *llm.Client
 	llmBaseURL string
 
-	wizard             WizardModel
-	sessionList        SessionListModel
-	input              textinput.Model
-	spinner            spinner.Model
-	vp                 viewport.Model
-	loading            bool
-}
-
-// llmResponseMsg se devuelve desde la goroutine del AgentLoop.
-type llmResponseMsg struct {
-	code   string
-	output string
-	err    error
+	wizard      WizardModel
+	sessionList SessionListModel
+	input       textarea.Model
+	spinner     spinner.Model
+	vp          viewport.Model
+	loading     bool
+	agentStatus string
 }
 
 func NewAppModel(baseURL string) AppModel {
-	in := textinput.New()
-	in.Placeholder = "Ask something..."
-	in.Width = 40
-	in.Focus()
+	ta := textarea.New()
+	ta.Placeholder = "Ask something..."
+	ta.ShowLineNumbers = false
+	ta.Prompt = ""
+	ta.FocusedStyle.Base = lipgloss.NewStyle()
+	ta.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.Color("#555555"))
+	ta.FocusedStyle.Text = lipgloss.NewStyle().Foreground(lipgloss.Color("#FAFAFA"))
+	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
+	ta.FocusedStyle.EndOfBuffer = lipgloss.NewStyle()
+	ta.BlurredStyle = ta.FocusedStyle
+	ta.SetWidth(40)
+	ta.SetHeight(1)
+	ta.CharLimit = 0
+	ta.Focus()
 
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
@@ -67,14 +71,14 @@ func NewAppModel(baseURL string) AppModel {
 		llmBaseURL:  baseURL,
 		wizard:      NewWizardModel(),
 		sessionList: NewSessionListModel(),
-		input:       in,
+		input:       ta,
 		spinner:     sp,
 		vp:          viewport.New(80, 20),
 	}
 }
 
 func (m AppModel) Init() tea.Cmd {
-	return tea.Batch(m.spinner.Tick)
+	return tea.Batch(m.spinner.Tick, textarea.Blink)
 }
 
 func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -127,33 +131,47 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 
-		if msg.String() == "esc" {
-			m.state = viewSessionList
-			m.input.SetValue("")
-			return m, nil
-		}
-
-			if msg.Type == tea.KeyEnter && !m.loading {
-				q := strings.TrimSpace(m.input.Value())
-				if q != "" {
-					m.loading = true
-					session := m.sm.GetActive()
-					session.Messages = append(session.Messages, domain.Message{
-						Role:    domain.RoleUser,
-						Content: q,
-					})
-					m.input.SetValue("")
-					m.refreshViewport()
-					m.vp.GotoBottom()
-					return m, tea.Batch(
-						m.spinner.Tick,
-						AgentLoop(m.llmClient, session),
-					)
-				}
+			if msg.String() == "esc" {
+				m.state = viewSessionList
+				m.input.SetValue("")
+				m.input.SetHeight(1)
+				return m, nil
 			}
-			var cmd tea.Cmd
-			m.input, cmd = m.input.Update(msg)
-			return m, cmd
+
+			switch msg.String() {
+			case "enter":
+				if !m.loading {
+					q := strings.TrimSpace(m.input.Value())
+					if q != "" {
+						m.loading = true
+						m.agentStatus = "Generating..."
+						session := m.sm.GetActive()
+						session.Messages = append(session.Messages, domain.Message{
+							Role:    domain.RoleUser,
+							Content: q,
+						})
+						m.input.SetValue("")
+						m.input.SetHeight(1)
+						m.refreshViewport()
+						m.vp.GotoBottom()
+						return m, tea.Batch(
+							m.spinner.Tick,
+							StartAgent(m.llmClient, session),
+						)
+					}
+				}
+				return m, nil
+			case "shift+enter":
+				var cmd tea.Cmd
+				m.input, cmd = m.input.Update(tea.KeyMsg{Type: tea.KeyEnter})
+				m.adjustInputHeight()
+				return m, cmd
+			default:
+				var cmd tea.Cmd
+				m.input, cmd = m.input.Update(msg)
+				m.adjustInputHeight()
+				return m, cmd
+			}
 		}
 
 	case createSessionMsg:
@@ -178,16 +196,90 @@ func (m AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sm.SwitchSession(msg.sessionID)
 		m.state = viewChat
 		m.input.SetValue("")
+		m.input.SetHeight(1)
 		m.input.Focus()
 		m.refreshViewport()
 		return m, nil
 
-	case llmResponseMsg:
-		m.loading = false
-		if session := m.sm.GetActive(); session != nil {
+	case agentCodeMsg:
+		// Código generado o reparado — mostrarlo y ejecutarlo
+		m.agentStatus = "Executing..."
+		m.refreshViewport()
+		m.vp.GotoBottom()
+
+		return m, executeCode(msg.code, msg.explanation, msg.attempt)
+
+	case agentExecMsg:
+		session := m.sm.GetActive()
+		if session == nil {
+			m.loading = false
+			m.agentStatus = ""
+			return m, nil
+		}
+
+		if msg.execErr == nil {
+			// ÉXITO — actualizar el último mensaje assistant con el output
+			lastIdx := len(session.Messages) - 1
+			if lastIdx >= 0 && session.Messages[lastIdx].Role == domain.RoleAssistant {
+				session.Messages[lastIdx].Content = msg.output
+
+				chartPath := extractChartPath(msg.output)
+				if chartPath != "" {
+					_ = runner.OpenBrowser(chartPath)
+					if session.Messages[lastIdx].Explanation != "" {
+						session.Messages[lastIdx].Explanation += fmt.Sprintf("\n\nChart opened: %s", chartPath)
+					} else {
+						session.Messages[lastIdx].Explanation = fmt.Sprintf("Chart opened: %s", chartPath)
+					}
+				}
+			}
+			m.loading = false
+			m.agentStatus = ""
 			m.refreshViewport()
 			m.vp.GotoBottom()
+			return m, nil
 		}
+
+		// FALLO — marcar el último mensaje assistant como fallido
+		lastIdx := len(session.Messages) - 1
+		if lastIdx >= 0 && session.Messages[lastIdx].Role == domain.RoleAssistant {
+			session.Messages[lastIdx].Failed = true
+			session.Messages[lastIdx].Content = msg.output
+		}
+		m.refreshViewport()
+		m.vp.GotoBottom()
+
+		// ¿Quedan reintentos?
+		if msg.attempt+1 >= maxRetries {
+			m.loading = false
+			m.agentStatus = ""
+			session.Messages = append(session.Messages, domain.Message{
+				Role:    domain.RoleAssistant,
+				Content: fmt.Sprintf("Failed after %d attempts. Could not generate working code.", maxRetries),
+			})
+			m.refreshViewport()
+			m.vp.GotoBottom()
+			return m, nil
+		}
+
+		// Iniciar reparación
+		m.agentStatus = fmt.Sprintf("Repairing (attempt %d/%d)...", msg.attempt+2, maxRetries)
+		return m, repairCode(m.llmClient, session, msg.code, msg.output, msg.attempt+1)
+
+	case agentDoneMsg:
+		m.loading = false
+		m.agentStatus = ""
+		if msg.err != nil {
+			session := m.sm.GetActive()
+			if session != nil {
+				session.Messages = append(session.Messages, domain.Message{
+					Role:    domain.RoleAssistant,
+					Content: fmt.Sprintf("Error: %v", msg.err),
+				})
+			}
+		}
+		m.refreshViewport()
+		m.vp.GotoBottom()
 		return m, nil
 	}
 
@@ -216,11 +308,19 @@ func (m AppModel) View() string {
 	return ""
 }
 
-func (m *AppModel) resizePanes() {
-	if m.width == 0 || m.height == 0 {
-		return
+func (m *AppModel) adjustInputHeight() {
+	lines := strings.Count(m.input.Value(), "\n") + 1
+	if lines < 1 {
+		lines = 1
 	}
+	if lines > 6 {
+		lines = 6
+	}
+	m.input.SetHeight(lines)
+	m.resizePanes()
+}
 
+func (m AppModel) innerRightWidth() int {
 	leftW := m.width / 4
 	if leftW < 20 {
 		leftW = 20
@@ -228,22 +328,31 @@ func (m *AppModel) resizePanes() {
 	if leftW > 35 {
 		leftW = 35
 	}
+	inner := m.width - leftW - 6
+	if inner < 10 {
+		inner = 10
+	}
+	return inner
+}
 
-	rightW := m.width - leftW - 2
-	if rightW < 10 {
-		rightW = 10
+func (m *AppModel) resizePanes() {
+	if m.width == 0 || m.height == 0 {
+		return
 	}
 
-	inputHeight := 3
-	vpHeight := m.height - inputHeight - 4
+	innerRightW := m.innerRightWidth()
+
+	maxInputHeight := 6
+	hintHeight := 1
+	vpHeight := m.height - maxInputHeight - hintHeight - 4
 	if vpHeight < 5 {
 		vpHeight = 5
 	}
 
-	m.vp.Width = rightW - 4
+	m.vp.Width = innerRightW
 	m.vp.Height = vpHeight
 
-	m.input.Width = rightW - 4
+	m.input.SetWidth(innerRightW)
 }
 
 func (m AppModel) chatLayoutView() string {
@@ -275,19 +384,79 @@ func (m AppModel) rightPaneView() string {
 		return "No active session"
 	}
 
+	innerRightW := m.innerRightWidth()
+
 	var b strings.Builder
 	b.WriteString(TitleStyle.Render(fmt.Sprintf(" %s ", session.Name)))
 	b.WriteString("\n")
 	b.WriteString(m.vp.View())
 	b.WriteString("\n")
-	b.WriteString(m.input.View())
+
+	// Input box
+	inputBox := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#7D56F4")).
+		Padding(0, 1).
+		Width(innerRightW).
+		Render(m.input.View())
+	b.WriteString(inputBox)
 	b.WriteString("\n")
+
 	if m.loading {
-		b.WriteString(m.spinner.View() + " thinking...")
+		status := m.agentStatus
+		if status == "" {
+			status = "thinking..."
+		}
+		b.WriteString(m.spinner.View() + " " + status)
 	} else {
-		b.WriteString(SubtitleStyle.Render("↑/↓ scroll • esc back • enter send"))
+		model := m.llmClient.Model()
+		hint := fmt.Sprintf("%s  •  ↑/↓ scroll • esc back • enter send", model)
+		b.WriteString(SubtitleStyle.Render(hint))
 	}
 	return b.String()
+}
+
+func wordWrap(text string, maxWidth int) string {
+	if maxWidth <= 0 {
+		return text
+	}
+	var out strings.Builder
+	for i, line := range strings.Split(text, "\n") {
+		if i > 0 {
+			out.WriteString("\n")
+		}
+		if runewidth.StringWidth(line) <= maxWidth {
+			out.WriteString(line)
+			continue
+		}
+		words := strings.Fields(line)
+		col := 0
+		for j, word := range words {
+			ww := runewidth.StringWidth(word)
+			if j > 0 && col+1+ww > maxWidth {
+				out.WriteString("\n")
+				col = 0
+			} else if j > 0 {
+				out.WriteString(" ")
+				col++
+			}
+			if ww > maxWidth {
+				for _, ch := range word {
+					cw := runewidth.RuneWidth(ch)
+					if col+cw > maxWidth {
+						out.WriteString("\n")
+						col = 0
+					}
+					out.WriteRune(ch)
+					col += cw
+				}
+			} else {
+				out.WriteString(word)
+				col += ww
+			}
+		}
+	}
+	return out.String()
 }
 
 func (m *AppModel) refreshViewport() {
@@ -297,90 +466,63 @@ func (m *AppModel) refreshViewport() {
 		return
 	}
 
+	innerW := m.innerRightWidth()
+	codeW := innerW - 4
+	explanationW := innerW - 2
+	userContentW := innerW - 5
+	if codeW < 4 {
+		codeW = 4
+	}
+	if explanationW < 2 {
+		explanationW = 2
+	}
+	if userContentW < 4 {
+		userContentW = 4
+	}
+
 	var b strings.Builder
 	for _, msg := range session.Messages {
+		if msg.IsError {
+			continue
+		}
+
 		switch msg.Role {
 		case domain.RoleUser:
 			b.WriteString(UserMsgStyle.Render("You: "))
-			b.WriteString(msg.Content)
+			b.WriteString(wordWrap(msg.Content, userContentW))
+			b.WriteString("\n\n")
 		case domain.RoleAssistant:
-			b.WriteString(AssistantMsgStyle.Render("AI: "))
-			b.WriteString(msg.Content)
+			if msg.Failed {
+				b.WriteString(FailedLabelStyle.Render("AI: ✗ FAILED"))
+				b.WriteString("\n")
+				b.WriteString(FailedCodeStyle.Render(wordWrap(msg.RawCode, codeW)))
+				b.WriteString("\n")
+				if msg.Content != "" {
+					b.WriteString(ErrorStyle.Render(wordWrap(msg.Content, innerW)))
+				}
+				b.WriteString("\n\n")
+			} else if msg.RawCode != "" && msg.Explanation != "" {
+				b.WriteString(AssistantMsgStyle.Render("AI: "))
+				b.WriteString("\n")
+				b.WriteString(CodeBlockStyle.Render(wordWrap(msg.RawCode, codeW)))
+				b.WriteString("\n\n")
+				b.WriteString(ExplanationStyle.Render(wordWrap(msg.Explanation, explanationW)))
+				b.WriteString("\n\n")
+			} else if msg.RawCode != "" {
+				b.WriteString(AssistantMsgStyle.Render("AI: "))
+				b.WriteString("\n")
+				b.WriteString(CodeBlockStyle.Render(wordWrap(msg.RawCode, codeW)))
+				b.WriteString("\n")
+				if msg.Content != "" {
+					b.WriteString(ExplanationStyle.Render(wordWrap(msg.Content, explanationW)))
+				}
+				b.WriteString("\n\n")
+			} else {
+				b.WriteString(AssistantMsgStyle.Render("AI: "))
+				b.WriteString(wordWrap(msg.Content, innerW))
+				b.WriteString("\n\n")
+			}
 		}
-		b.WriteString("\n\n")
 	}
 	m.vp.SetContent(b.String())
-}
-
-// extractChartPath busca la última línea no vacía del output que termine en .html.
-func extractChartPath(output string) string {
-	lines := strings.Split(output, "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		line := strings.TrimSpace(lines[i])
-		if line != "" && strings.HasSuffix(line, ".html") {
-			return line
-		}
-	}
-	return ""
-}
-
-// AgentLoop ejecuta el ciclo CodeAct: genera código, lo ejecuta,
-// y si falla inyecta automáticamente el error como feedback al LLM
-// para reintentar (máximo 3 veces). Muta directamente session.Messages.
-func AgentLoop(client *llm.Client, session *domain.Session) tea.Cmd {
-	return func() tea.Msg {
-		ctx := context.Background()
-		maxRetries := 3
-
-		for attempt := 0; attempt < maxRetries; attempt++ {
-			systemPrompt := llm.BuildSystemPrompt(&session.DDLInfo, session.Config.DSN())
-			msgs := llm.SessionMessagesToOpenAI(session.Messages, systemPrompt)
-
-			generatedCode, err := client.Chat(ctx, msgs)
-			if err != nil {
-				session.Messages = append(session.Messages, domain.Message{
-					Role:    domain.RoleAssistant,
-					Content: fmt.Sprintf("LLM communication error: %v", err),
-				})
-				return llmResponseMsg{code: "", output: "", err: err}
-			}
-
-			output, execErr := runner.ExecuteTemporal(generatedCode)
-
-			if execErr == nil {
-				// ÉXITO TÉCNICO
-				chartPath := extractChartPath(output)
-				content := fmt.Sprintf("=== Generated Code ===\n%s\n\n=== Execution Result ===\n%s", generatedCode, output)
-				if chartPath != "" {
-					_ = runner.OpenBrowser(chartPath)
-					content += fmt.Sprintf("\n\nChart opened: %s", chartPath)
-				}
-				session.Messages = append(session.Messages, domain.Message{
-					Role:    domain.RoleAssistant,
-					Content: content,
-					RawCode: generatedCode,
-				})
-				return llmResponseMsg{code: generatedCode, output: output, err: nil}
-			}
-
-			// ERROR: guardar código que falló y luego el feedback automático
-			session.Messages = append(session.Messages, domain.Message{
-				Role:    domain.RoleAssistant,
-				Content: fmt.Sprintf("=== Generated Code (attempt %d) ===\n%s", attempt+1, generatedCode),
-				RawCode: generatedCode,
-			})
-			session.Messages = append(session.Messages, domain.Message{
-				Role:    domain.RoleUser,
-				Content: fmt.Sprintf("The previous code failed with error: %v\nOutput: %s\nPlease fix and regenerate.", execErr, output),
-				IsError: true,
-			})
-		}
-
-		// Agotó los 3 intentos sin éxito
-		session.Messages = append(session.Messages, domain.Message{
-			Role:    domain.RoleAssistant,
-			Content: fmt.Sprintf("Failed after %d attempts. Could not generate working code.", maxRetries),
-		})
-		return llmResponseMsg{code: "", output: "", err: fmt.Errorf("failed after %d attempts", maxRetries)}
-	}
 }
