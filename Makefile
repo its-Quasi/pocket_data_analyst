@@ -1,5 +1,5 @@
 DB_CONTAINER=mysql-employees
-
+OLLAMA_MODEL=gpt-oss:20b-cloud
 
 env-init:
 	@if [ ! -f .env ]; then \
@@ -31,7 +31,19 @@ db-seed:
 db-clean:
 	rm -rf test_db
 
-setup: db-download db-up db-wait db-seed db-clean
+ollama-check:
+	@command -v ollama >/dev/null 2>&1 || \
+		(echo "❌ Ollama no está instalado. Instálalo primero: https://ollama.com/download"; exit 1)
+
+ollama-serve:
+	@pgrep -x ollama >/dev/null || (ollama serve >/dev/null 2>&1 &)
+	@sleep 3
+
+ollama-pull: ollama-check ollama-serve
+	@echo "Descargando modelo $(OLLAMA_MODEL)..."
+	ollama pull $(OLLAMA_MODEL)
+
+setup: db-download db-up db-wait db-seed db-clean ollama-pull
 
 run:
 	go run ./cmd/dbagent
